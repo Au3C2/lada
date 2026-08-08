@@ -231,15 +231,8 @@ class FrameRestorer:
 
     def _collect_garbage(self, clip_buffer):
         processed_clips = list(filter(lambda _clip: len(_clip) == 0, clip_buffer))
-        has_processed_clips = len(processed_clips) > 0
         for processed_clip in processed_clips:
             clip_buffer.remove(processed_clip)
-
-        if has_processed_clips:
-            if self.device.type == 'cuda':
-                torch.cuda.empty_cache()
-            elif self.device.type == 'mps':
-                torch.mps.empty_cache()
 
     def _clip_buffer_contains_all_cips_needed_for_current_restoration(self, current_frame_num, num_mosaic_detections, clip_buffer):
         num_clips_starting_at_frame = len([clip for clip in clip_buffer if clip.frame_start == current_frame_num])

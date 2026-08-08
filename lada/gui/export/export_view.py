@@ -487,7 +487,7 @@ class ExportView(Gtk.Widget):
                             logger.debug("Received first frame after resume position, successful resume.")
                             self.resume_info = None
                             GLib.idle_add(lambda: self.emit('video-export-resumed'))
-                    self.video_writer.write(restored_frame, restored_frame_pts, bgr2rgb=True)
+                    self.video_writer.write(restored_frame, restored_frame_pts)
 
                     duration_end = time.time()
                     duration = duration_end - duration_start

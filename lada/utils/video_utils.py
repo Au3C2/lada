@@ -467,14 +467,14 @@ class VideoWriter:
             pts_to_assign = heapq.heappop(self.pts_heap)
             self.pts_set.remove(pts_to_assign)
 
-            out_frame = av.VideoFrame.from_ndarray(frame_to_encode, format='rgb24')
+            out_frame = av.VideoFrame.from_ndarray(frame_to_encode, format='bgr24')
             out_frame.pts = pts_to_assign
             out_packet = self.video_stream.encode(out_frame)
             if out_packet:
                 self.output_container.mux(out_packet)
 
 
-    def write(self, frame, frame_pts=None, bgr2rgb=False):
+    def write(self, frame, frame_pts=None):
         # We add the frame and its pts given by PyAV (FFmpeg) to a FIFO queue and a min heap, respectively.
         # Upon a call to write(), if the buffer is full, we pop the head of the queue and the smallest PTS and pair
         # those together. This operation is a no-op for "nicely behaved" videos, where frames and PTS are decoded
@@ -483,10 +483,9 @@ class VideoWriter:
         # the user to identify a framerate ahead of time, and uses the timing of the existing PTS, but reorders the PTS.
         #
         # See https://codeberg.org/ladaapp/lada/pulls/33 for more information/discussion.
+        # Frames are expected in BGR (as produced by VideoReader), matching the 'bgr24' format used by _process_buffer.
         if isinstance(frame, torch.Tensor):
             frame = frame.cpu().numpy()
-        if bgr2rgb:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         if frame_pts not in self.pts_set:
             heapq.heappush(self.pts_heap, frame_pts)

@@ -132,7 +132,7 @@ def process_video_file(input_path: str, output_path: str, temp_dir_path: str, de
                     print("Error on export: frame restorer stopped prematurely")
                     break
                 (restored_frame, restored_frame_pts) = elem
-                video_writer.write(restored_frame, restored_frame_pts, bgr2rgb=True)
+                video_writer.write(restored_frame, restored_frame_pts)
                 frame_restorer_progressbar.update()
     except (Exception, KeyboardInterrupt) as e:
         success = False

@@ -290,16 +290,18 @@ class MosaicDetector:
             video_frames_generator = video_reader.frames()
             frame_num = self.start_frame
             while not (eof or self.stop_requested):
+                frames = []
+                frame_pts_list = []
                 try:
-                    frames = []
                     for i in range(self.batch_size):
-                        frame, _ = next(video_frames_generator)
+                        frame, frame_pts = next(video_frames_generator)
                         frames.append(frame)
+                        frame_pts_list.append(frame_pts)
                 except StopIteration:
                     eof = True
                 if len(frames) > 0:
                     frames_batch = self.model.preprocess(frames)
-                    data = (frames_batch, frames, frame_num)
+                    data = (frames_batch, frames, frame_pts_list, frame_num)
                     self.frame_feeder_queue.put(data)
                     if self.stop_requested:
                         logger.debug("frame feeder worker: frame_feeder_queue producer unblocked")
@@ -330,11 +332,11 @@ class MosaicDetector:
                     logger.debug("inference worker: inference_queue producer unblocked")
                     break
                 break
-            frames_batch, frames, frame_num = frames_data
+            frames_batch, frames, frame_pts_list, frame_num = frames_data
 
             batch_prediction_results = self.model.inference_and_postprocess(frames_batch, frames)
 
-            self.inference_queue.put((batch_prediction_results, frames_batch, frame_num))
+            self.inference_queue.put((batch_prediction_results, frames_batch, frame_pts_list, frame_num))
             if self.stop_requested:
                 logger.debug("inference worker: inference_queue producer unblocked")
                 break
@@ -365,18 +367,22 @@ class MosaicDetector:
                     logger.debug("frame detector worker: mosaic_clip_queue producer unblocked")
                     break
             else:
-                batch_prediction_results, preprocessed_frames, _frame_num = inference_data
+                batch_prediction_results, preprocessed_frames, frame_pts_list, _frame_num = inference_data
                 assert frame_num == _frame_num, "frame detector worker out of sync with frame reader"
                 assert len(preprocessed_frames) == len(batch_prediction_results)
+                assert len(frame_pts_list) == len(batch_prediction_results)
                 for i, results in enumerate(batch_prediction_results):
                     self._create_or_append_scenes_based_on_prediction_result(results, scenes, frame_num)
                     num_scenes_containing_frame = len([scene for scene in scenes if scene.frame_start <= frame_num <= scene.frame_end])
-                    self.frame_detection_queue.put((frame_num, num_scenes_containing_frame))
-                    if self.stop_requested:
-                        logger.debug("frame detector worker: frame_detection_queue producer unblocked")
-                        break
+                    # Create clips BEFORE putting the frame into frame_detection_queue: frame_detection_queue is
+                    # size-limited, and the frame restoration worker blocks on restored clips while this queue is full.
+                    # Creating clips first guarantees clip restoration can progress and unblock the consumer, avoiding a deadlock.
                     queue_marker = self._create_clips_for_completed_scenes(scenes, frame_num, eof=False)
                     if queue_marker is STOP_MARKER:
+                        break
+                    self.frame_detection_queue.put((frame_num, num_scenes_containing_frame, results.orig_img, frame_pts_list[i]))
+                    if self.stop_requested:
+                        logger.debug("frame detector worker: frame_detection_queue producer unblocked")
                         break
                     frame_num += 1
                 # Release MPS driver cached memory to prevent unbounded growth

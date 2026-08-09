@@ -12,6 +12,12 @@ os.environ["ALBUMENTATIONS_OFFLINE"] = "1"
 os.environ["ALBUMENTATIONS_NO_TELEMETRY"] = "1"
 os.environ["YOLO_VERBOSE"] = "false"
 
+# PyAV's encode() holds the GIL across the FFmpeg call; with the default 5ms
+# switch interval a background encoder thread starves waiting to re-acquire it.
+# Lowering the interval lets the encoder thread grab the GIL quickly after
+# PyAV releases it, so CLI encoding overlaps with the detection pipeline.
+sys.setswitchinterval(0.0005)
+
 def _get_version(version: str):
     if not version.endswith("dev"):
         return version

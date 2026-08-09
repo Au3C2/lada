@@ -42,7 +42,7 @@ from lada.utils.os_utils import gpu_has_fp16_acceleration, get_default_torch_dev
 from lada.restorationpipeline.frame_restorer import FrameRestorer
 from lada.restorationpipeline import load_models
 from lada.utils.threading_utils import STOP_MARKER, ErrorMarker
-from lada.utils.video_utils import get_video_meta_data, VideoWriter, get_default_preset_name
+from lada.utils.video_utils import get_video_meta_data, get_default_preset_name
 
 def setup_argparser() -> argparse.ArgumentParser:
     examples_header_text = _("Examples:")
@@ -122,7 +122,7 @@ def process_video_file(input_path: str, output_path: str, temp_dir_path: str, de
     try:
         frame_restorer.start()
         frame_restorer_progressbar.init()
-        with VideoWriter(video_tmp_file_output_path, video_metadata.video_width, video_metadata.video_height,
+        with utils.AsyncVideoWriter(video_tmp_file_output_path, video_metadata.video_width, video_metadata.video_height,
                          video_metadata.video_fps_exact, encoder=encoder, encoder_options=encoder_options,
                          time_base=video_metadata.time_base, mp4_fast_start=mp4_fast_start) as video_writer:
             for elem in frame_restorer:

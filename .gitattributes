@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Lada Authors
+# SPDX-License-Identifier: AGPL-3.0
+
+# Normalize line endings to LF on commit/checkout to avoid false "modified"
+# reports on Windows (core.autocrlf interplay). Binary files are left untouched.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.mp4 binary
+*.mkv binary
+*.pt binary
+*.pth binary
+*.onnx binary
+*.zip binary
+*.gz binary

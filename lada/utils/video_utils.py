@@ -467,7 +467,11 @@ class VideoWriter:
             pts_to_assign = heapq.heappop(self.pts_heap)
             self.pts_set.remove(pts_to_assign)
 
-            out_frame = av.VideoFrame.from_ndarray(frame_to_encode, format='bgr24')
+            try:
+                out_frame = av.VideoFrame.from_numpy_buffer(frame_to_encode, format='bgr24')
+            except (ValueError, TypeError):
+                # from_numpy_buffer requires a contiguous array; fall back to a copy for exotic inputs
+                out_frame = av.VideoFrame.from_ndarray(frame_to_encode, format='bgr24')
             out_frame.pts = pts_to_assign
             out_packet = self.video_stream.encode(out_frame)
             if out_packet:

@@ -87,6 +87,8 @@ class BasicVSRPlusPlusNet(BaseModule):
 
         # activation function
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        # CUDA-graph accelerated propagate (None = not yet tried, False = unavailable)
+        self._cudagraph_propagate = None
 
     def compute_flow(self, lqs):
         """Compute optical flow using SPyNet for feature alignment.
@@ -112,6 +114,23 @@ class BasicVSRPlusPlusNet(BaseModule):
 
         return flows_forward, flows_backward
 
+    def prepare_cudagraph_propagate(self, n, h, w):
+        """Pre-build the CUDA-graph propagate outside the worker threads.
+
+        Capture must not race with other threads' GPU work (it needs exclusive
+        use of the default stream), so it is done once here at model-load time.
+        Any failure falls back to eager.
+        """
+        self._cudagraph_propagate = False
+        try:
+            if not torch.cuda.is_available():
+                return
+            from lada.models.basicvsrpp.cudagraph_propagate import PropagateGraphs
+            self._cudagraph_propagate = PropagateGraphs(self, n, h, w)
+        except Exception as e:
+            logger.warning("CUDA-graph propagate unavailable, using eager: %s", e)
+            self._cudagraph_propagate = False
+
     def propagate(self, feats, flows, module_name):
         """Propagate the latent features throughout the sequence.
 
@@ -129,6 +148,9 @@ class BasicVSRPlusPlusNet(BaseModule):
         """
 
         n, t, _, h, w = flows.size()
+
+        if self._cudagraph_propagate and self._cudagraph_propagate.supports(n, h, w):
+            return self._cudagraph_propagate.propagate(feats, flows, module_name)
 
         # PyTorch 2.0 could not compile data type of 'range'
         # frame_idx = range(0, t + 1)

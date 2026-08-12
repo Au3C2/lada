@@ -1,7 +1,11 @@
+import logging
+
 import torch
 
 from lada.models.basicvsrpp.basicvsrpp_gan import BasicVSRPlusPlusGan
 from lada.utils import ImageTensor
+
+logger = logging.getLogger(__name__)
 
 class BasicvsrppMosaicRestorer:
     def __init__(self, model: BasicVSRPlusPlusGan, device: torch.device, fp16: bool):
@@ -12,6 +16,16 @@ class BasicvsrppMosaicRestorer:
         # per op; running the whole network in NHWC removes those (~8-10% faster
         # forward on 256x256 clips, numerics unchanged).
         self.model = self.model.to(memory_format=torch.channels_last)
+        # Pre-build the CUDA-graph propagate at load time: capture needs the
+        # default stream to itself, so it must not happen inside the worker
+        # threads. Feature maps are always 64x64 for 256x256 clips.
+        gen = getattr(self.model, "generator_ema", None) or self.model.generator
+        prepare = getattr(gen, "prepare_cudagraph_propagate", None)
+        if prepare is not None:
+            try:
+                prepare(1, 64, 64)
+            except Exception as e:
+                logger.warning("CUDA-graph propagate pre-build failed: %s", e)
 
     def restore(self, video: list[ImageTensor], max_frames=-1) -> list[ImageTensor]:
         input_frame_count = len(video)

@@ -89,6 +89,7 @@ class BasicVSRPlusPlusNet(BaseModule):
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
         # CUDA-graph accelerated propagate (None = not yet tried, False = unavailable)
         self._cudagraph_propagate = None
+        self._cudagraph_upsample = None
 
     def compute_flow(self, lqs):
         """Compute optical flow using SPyNet for feature alignment.
@@ -130,6 +131,20 @@ class BasicVSRPlusPlusNet(BaseModule):
         except Exception as e:
             logger.warning("CUDA-graph propagate unavailable, using eager: %s", e)
             self._cudagraph_propagate = False
+
+    def prepare_cudagraph_upsample(self, n, h, w):
+        """Pre-build the CUDA-graph upsample at load time (see propagate)."""
+        self._cudagraph_upsample = False
+        try:
+            if not torch.cuda.is_available():
+                return
+            from lada.models.basicvsrpp.cudagraph_propagate import UpsampleGraphs
+            if not self._cudagraph_propagate or not self._cudagraph_propagate.supports(n, h, w):
+                return
+            self._cudagraph_upsample = UpsampleGraphs(self, n, h, w)
+        except Exception as e:
+            logger.warning("CUDA-graph upsample unavailable, using eager: %s", e)
+            self._cudagraph_upsample = False
 
     def propagate(self, feats, flows, module_name):
         """Propagate the latent features throughout the sequence.
@@ -225,6 +240,9 @@ class BasicVSRPlusPlusNet(BaseModule):
 
         mapping_idx = list(range(0, num_outputs))
         mapping_idx += mapping_idx[::-1]
+
+        if self._cudagraph_upsample:
+            return self._cudagraph_upsample.upsample(lqs, feats)
 
         for i in range(0, lqs.size(1)):
             hr = [feats[k].pop(0) for k in feats if k != 'spatial']

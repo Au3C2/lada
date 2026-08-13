@@ -101,3 +101,61 @@ class PropagateGraphs:
         if 'backward' in module_name:
             feats[module_name] = feats[module_name][::-1]
         return feats
+
+
+class UpsampleGraphs:
+    """CUDA-graph for the per-frame reconstruction/upsample step.
+
+    The reconstruction (cat 5 branches -> residual blocks -> 2x pixel-shuffle ->
+    final convs -> residual add of the input) is a straight-line conv chain, so
+    it captures bit-exactly. The 5-way feature cat is done eagerly into a static
+    buffer; lqs[:, i] is copied in per frame. Output is bit-identical to eager.
+    """
+
+    def __init__(self, net, n, h, w):
+        self.net = net
+        self.n = n
+        self.H, self.W = h, w
+        self.C = net.mid_channels
+        device = next(net.parameters()).device
+        dtype = next(net.parameters()).dtype
+        ih, iw = 4 * h, 4 * w  # input lqs spatial
+        s_hr = torch.empty(n, 5 * self.C, h, w, device=device, dtype=dtype,
+                           memory_format=torch.channels_last)
+        s_lq = torch.empty(n, 3, ih, iw, device=device, dtype=dtype,
+                           memory_format=torch.channels_last)
+        self.s_hr = s_hr
+        self.s_lq = s_lq
+
+        def step(hr, lq):
+            hr = net.reconstruction(hr)
+            hr = net.lrelu(net.upsample1(hr))
+            hr = net.lrelu(net.upsample2(hr))
+            hr = net.lrelu(net.conv_hr(hr))
+            hr = net.conv_last(hr)
+            return hr + lq
+
+        self.g = torch.cuda.CUDAGraph()
+        with torch.inference_mode():
+            step(s_hr, s_lq)
+            torch.cuda.synchronize()
+            with torch.cuda.graph(self.g):
+                self.s_out = step(s_hr, s_lq)
+
+    def supports(self, n, h, w):
+        return self.n == n and self.H == h and self.W == w
+
+    def upsample(self, lqs, feats):
+        n, t, c, h, w = lqs.size()
+        order = [k for k in feats if k != 'spatial']
+        mapping_idx = list(range(0, len(feats['spatial'])))
+        mapping_idx += mapping_idx[::-1]
+        outputs = []
+        for i in range(t):
+            hr = [feats[k].pop(0) for k in order]
+            hr.insert(0, feats['spatial'][mapping_idx[i]])
+            self.s_hr.copy_(torch.cat(hr, dim=1))
+            self.s_lq.copy_(lqs[:, i, :, :, :])
+            self.g.replay()
+            outputs.append(self.s_out.clone())
+        return torch.stack(outputs, dim=1)

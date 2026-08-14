@@ -90,6 +90,7 @@ class BasicVSRPlusPlusNet(BaseModule):
         # CUDA-graph accelerated propagate (None = not yet tried, False = unavailable)
         self._cudagraph_propagate = None
         self._cudagraph_upsample = None
+        self._cudagraph_offsets = None
 
     def compute_flow(self, lqs):
         """Compute optical flow using SPyNet for feature alignment.
@@ -114,6 +115,23 @@ class BasicVSRPlusPlusNet(BaseModule):
         flows_forward = self.spynet(lqs_2, lqs_1).view(n, t - 1, 2, h, w)
 
         return flows_forward, flows_backward
+
+    def _precompute_second_order_flows(self, flows, backward):
+        """Hoist the second-order flow computation out of the propagate loop.
+
+        flow_n2 at step i only depends on the raw flows (flow_n1 and its
+        neighbour), so both propagation iterations of the same direction
+        recompute identical values. The table is indexed by A = flow_idx[i]
+        (the flow_n1 index): forward warps the previous flow, backward warps
+        the next flow.
+        """
+        t = flows.size(1)
+        table = [None] * t
+        for A in range(0 if backward else 1, t - 1 if backward else t):
+            flow_n1 = flows[:, A, :, :, :]
+            raw = flows[:, A + 1 if backward else A - 1, :, :, :]
+            table[A] = flow_n1 + flow_warp(raw, flow_n1.permute(0, 2, 3, 1))
+        return table
 
     def prepare_cudagraph_propagate(self, n, h, w):
         """Pre-build the CUDA-graph propagate outside the worker threads.
@@ -146,7 +164,21 @@ class BasicVSRPlusPlusNet(BaseModule):
             logger.warning("CUDA-graph upsample unavailable, using eager: %s", e)
             self._cudagraph_upsample = False
 
-    def propagate(self, feats, flows, module_name):
+    def prepare_cudagraph_offsets(self, n, h, w):
+        """Pre-build the CUDA-graph offset/mask computation at load time."""
+        self._cudagraph_offsets = False
+        try:
+            if not torch.cuda.is_available():
+                return
+            from lada.models.basicvsrpp.cudagraph_offsets import OffsetGraphs
+            if not self._cudagraph_propagate or not self._cudagraph_propagate.supports(n, h, w):
+                return
+            self._cudagraph_offsets = OffsetGraphs(self, n, h, w)
+        except Exception as e:
+            logger.warning("CUDA-graph offsets unavailable, using eager: %s", e)
+            self._cudagraph_offsets = False
+
+    def propagate(self, feats, flows, module_name, second_order_flows=None):
         """Propagate the latent features throughout the sequence.
 
         Args:
@@ -155,6 +187,10 @@ class BasicVSRPlusPlusNet(BaseModule):
             flows (tensor): Optical flows with shape (n, t - 1, 2, h, w).
             module_name (str): The name of the propagation branches. Can either
                 be 'backward_1', 'forward_1', 'backward_2', 'forward_2'.
+            second_order_flows (list[tensor], optional): Precomputed flow_n2
+                table indexed by the flow_n1 index (see
+                _precompute_second_order_flows); avoids recomputing the same
+                second-order flows in both iterations of a direction.
 
         Return:
             dict(list[tensor]): A dictionary containing all the propagated
@@ -165,7 +201,7 @@ class BasicVSRPlusPlusNet(BaseModule):
         n, t, _, h, w = flows.size()
 
         if self._cudagraph_propagate and self._cudagraph_propagate.supports(n, h, w):
-            return self._cudagraph_propagate.propagate(feats, flows, module_name)
+            return self._cudagraph_propagate.propagate(feats, flows, module_name, second_order_flows)
 
         # PyTorch 2.0 could not compile data type of 'range'
         # frame_idx = range(0, t + 1)
@@ -196,10 +232,13 @@ class BasicVSRPlusPlusNet(BaseModule):
                 if i > 1:  # second-order features
                     feat_n2 = feats[module_name][-2]
 
-                    flow_n2 = flows[:, flow_idx[i - 1], :, :, :]
+                    if second_order_flows is not None:
+                        flow_n2 = second_order_flows[flow_idx[i]]
+                    else:
+                        flow_n2 = flows[:, flow_idx[i - 1], :, :, :]
 
-                    flow_n2 = flow_n1 + flow_warp(flow_n2,
-                                                  flow_n1.permute(0, 2, 3, 1))
+                        flow_n2 = flow_n1 + flow_warp(flow_n2,
+                                                      flow_n1.permute(0, 2, 3, 1))
                     cond_n2 = flow_warp(feat_n2, flow_n2.permute(0, 2, 3, 1))
 
                 # flow-guided deformable convolution
@@ -291,6 +330,12 @@ class BasicVSRPlusPlusNet(BaseModule):
             f'but got {h} and {w}.')
         flows_forward, flows_backward = self.compute_flow(lqs_downsample)
 
+        # The second-order flow at each frame step depends only on the raw
+        # flows, so compute it once per direction and share it across both
+        # propagation iterations.
+        so_forward = self._precompute_second_order_flows(flows_forward, False)
+        so_backward = self._precompute_second_order_flows(flows_backward, True)
+
         # feature propagation
         for iter_ in [1, 2]:
             for direction in ['backward', 'forward']:
@@ -298,8 +343,9 @@ class BasicVSRPlusPlusNet(BaseModule):
 
                 feats[module] = []
                 flows = flows_backward if direction == 'backward' else flows_forward
+                second_order = so_backward if direction == 'backward' else so_forward
 
-                feats = self.propagate(feats, flows, module)
+                feats = self.propagate(feats, flows, module, second_order)
 
         return self.upsample(lqs, feats)
 
@@ -343,8 +389,13 @@ class SecondOrderDeformableAlignment(ModulatedDeformConv2d):
         """Init constant offset."""
         constant_init(self.conv_offset[-1], val=0, bias=0)
 
-    def forward(self, x, extra_feat, flow_1, flow_2):
-        """Forward function."""
+    def compute_offset_mask(self, extra_feat, flow_1, flow_2):
+        """Compute the deform-conv offset and modulation mask.
+
+        Split out of forward() so the whole chain (pure convs and elementwise
+        ops) can be captured as a CUDA graph; only the torchvision
+        deform_conv2d itself must stay eager.
+        """
         extra_feat = torch.cat([extra_feat, flow_1, flow_2], dim=1)
         out = self.conv_offset(extra_feat)
         o1, o2, mask = torch.chunk(out, 3, dim=1)
@@ -363,6 +414,12 @@ class SecondOrderDeformableAlignment(ModulatedDeformConv2d):
 
         # mask
         mask = torch.sigmoid(mask)
+
+        return offset, mask
+
+    def forward(self, x, extra_feat, flow_1, flow_2):
+        """Forward function."""
+        offset, mask = self.compute_offset_mask(extra_feat, flow_1, flow_2)
 
         return torchvision.ops.deform_conv2d(x, offset, self.weight, self.bias,
                                              self.stride, self.padding,

@@ -28,6 +28,12 @@ class BasicvsrppMosaicRestorer:
                 prepare_up(1, 64, 64)
             except Exception as e:
                 logger.warning("CUDA-graph upsample pre-build failed: %s", e)
+        prepare_off = getattr(gen, "prepare_cudagraph_offsets", None)
+        if prepare_off is not None:
+            try:
+                prepare_off(1, 64, 64)
+            except Exception as e:
+                logger.warning("CUDA-graph offsets pre-build failed: %s", e)
 
     def restore(self, video: list[ImageTensor], max_frames=-1) -> list[ImageTensor]:
         input_frame_count = len(video)

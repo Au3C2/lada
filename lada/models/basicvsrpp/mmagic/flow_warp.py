@@ -2,8 +2,34 @@
 # SPDX-License-Identifier: Apache-2.0 AND AGPL-3.0
 # Code vendored from: https://github.com/open-mmlab/mmagic
 
+import threading
+
 import torch
 import torch.nn.functional as F
+
+# The base sampling grid only depends on the spatial size, device and dtype,
+# but the eager path rebuilt it (arange + meshgrid + stack) on every call.
+# flow_warp is called ~3x per frame-step during propagate (~1300x per clip),
+# so caching the grid removes ~5 kernel launches + 4 small allocations per
+# call while keeping the arithmetic (and thus the numerics) identical.
+_GRID_CACHE: dict[tuple, torch.Tensor] = {}
+_GRID_CACHE_LOCK = threading.Lock()
+
+
+def _get_base_grid(h, w, device, dtype) -> torch.Tensor:
+    key = (h, w, device, dtype)
+    grid = _GRID_CACHE.get(key)
+    if grid is None:
+        with _GRID_CACHE_LOCK:
+            grid = _GRID_CACHE.get(key)
+            if grid is None:
+                grid_y, grid_x = torch.meshgrid(
+                    torch.arange(0, h, device=device, dtype=dtype),
+                    torch.arange(0, w, device=device, dtype=dtype),
+                    indexing='ij')
+                grid = torch.stack((grid_x, grid_y), 2)  # h, w, 2
+                _GRID_CACHE[key] = grid
+    return grid
 
 
 def flow_warp(x,
@@ -33,18 +59,7 @@ def flow_warp(x,
     _, _, h, w = x.size()
     # create mesh grid
     device = flow.device
-    # torch.meshgrid has been modified in 1.10.0 (compatibility with previous
-    # versions), and will be further modified in 1.12 (Breaking Change)
-    if 'indexing' in torch.meshgrid.__code__.co_varnames:
-        grid_y, grid_x = torch.meshgrid(
-            torch.arange(0, h, device=device, dtype=x.dtype),
-            torch.arange(0, w, device=device, dtype=x.dtype),
-            indexing='ij')
-    else:
-        grid_y, grid_x = torch.meshgrid(
-            torch.arange(0, h, device=device, dtype=x.dtype),
-            torch.arange(0, w, device=device, dtype=x.dtype))
-    grid = torch.stack((grid_x, grid_y), 2)  # h, w, 2
+    grid = _get_base_grid(h, w, device, x.dtype)
     grid.requires_grad_(False)
 
     grid_flow = grid + flow

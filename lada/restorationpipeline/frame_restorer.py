@@ -96,25 +96,32 @@ class FrameRestorer:
         with self.start_stop_lock:
             self.stop_requested = True
 
+            # Unblock ALL worker queues BEFORE stopping the detector. The frame
+            # detector worker blocks on frame_detection_queue.put and the frame
+            # restoration worker on frame_restoration_queue.put whenever their
+            # consumers (the frame_restoration_worker and the export loop) have
+            # stopped consuming; if left full, the detector's join() below would
+            # hang on the blocked producer.
+            threading_utils.put_queue_stop_marker(self.mosaic_clip_queue)
+            threading_utils.put_queue_stop_marker(self.frame_detection_queue)
+            threading_utils.empty_out_queue(self.restored_clip_queue)
+            threading_utils.empty_out_queue(self.frame_restoration_queue)
+            # The frame detector worker may have a full frame_detection_queue of
+            # real frames backing up (its consumer has stopped); drain it so the
+            # worker's blocked put() can complete before the detector is stopped.
+            threading_utils.empty_out_queue(self.frame_detection_queue)
+
             self.mosaic_detector.stop()
 
-            # unblock consumer
-            threading_utils.put_queue_stop_marker(self.mosaic_clip_queue)
-            # unblock producer
-            threading_utils.empty_out_queue(self.restored_clip_queue)
             # wait until thread stopped
             if self.clip_restoration_thread:
+                logger.debug("FrameRestorer: waiting to join clip_restoration_thread")
                 self.clip_restoration_thread.join()
                 logger.debug("FrameRestorer: joined clip_restoration_thread")
             self.clip_restoration_thread = None
 
-            # unblock consumer
-            threading_utils.put_queue_stop_marker(self.frame_detection_queue)
-            threading_utils.put_queue_stop_marker(self.restored_clip_queue)
-            # unblock producer
-            threading_utils.empty_out_queue(self.frame_restoration_queue)
-            # wait until thread stopped
             if self.frame_restoration_thread:
+                logger.debug("FrameRestorer: waiting to join frame_restoration_thread")
                 self.frame_restoration_thread.join()
                 logger.debug("FrameRestorer: joined frame_restoration_thread")
             self.frame_restoration_thread = None
@@ -247,6 +254,7 @@ class FrameRestorer:
         logger.debug("clip restoration worker: started")
         eof = False
         while not (eof or self.stop_requested):
+            logger.debug("clip restoration worker: waiting for clip on mosaic_clip_queue")
             clip = self.mosaic_clip_queue.get()
             if self.stop_requested or clip is STOP_MARKER:
                 logger.debug("clip restoration worker: mosaic_clip_queue consumer unblocked")
@@ -258,11 +266,15 @@ class FrameRestorer:
                     logger.debug("clip restoration worker: restored_clip_queue producer unblocked")
                     break
             else:
+                logger.debug("clip restoration worker: restoring clip (start)")
                 self._restore_clip(clip)
+                logger.debug("clip restoration worker: restoring clip (done)")
                 # Release MPS driver cached memory to prevent unbounded growth
                 if self.device.type == 'mps' and hasattr(torch.mps, 'empty_cache'):
                     torch.mps.empty_cache()
+                logger.debug("clip restoration worker: putting restored clip")
                 self.restored_clip_queue.put(clip)
+                logger.debug("clip restoration worker: put restored clip (done)")
                 if self.stop_requested:
                     logger.debug("clip restoration worker: restored_clip_queue producer unblocked")
                     break

@@ -80,9 +80,15 @@ def put_queue_stop_marker(queue: Queue | PipelineQueue, debug_queue_name: str | 
 def empty_out_queue(queue: Queue | PipelineQueue, debug_queue_name: str | None = None):
     queue_name = queue.name if isinstance(queue, PipelineQueue) else debug_queue_name
     assert queue_name is not None
+    # Use a non-blocking get: a concurrent consumer (e.g. a still-running worker)
+    # may take an item between queue.empty() and get(), which would otherwise
+    # block forever.
     while not queue.empty():
-        queue.get()
-        queue.task_done()
+        try:
+            queue.get(timeout=0.02)
+            queue.task_done()
+        except Empty:
+            pass
     logger.debug(f"purged all remaining elements from queue {queue_name}")
 
 def empty_out_queue_until_producer_is_done(queue: PipelineQueue, producer_thread: Thread):

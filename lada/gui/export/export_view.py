@@ -56,7 +56,7 @@ class ExportView(Gtk.Widget):
         self.stop_requested = False
         self.pause_requested = False
         self.resume_info: ResumeInformation | None = None
-        self.video_writer: video_utils.VideoWriter | None = None
+        self.video_writer: video_utils.AsyncVideoWriter | None = None
         self.progress_calculator: export_utils.ProgressCalculator | None = None
         self.temp_file_path: str | None = None
 
@@ -458,7 +458,7 @@ class ExportView(Gtk.Widget):
                     start_ns = 0
                     start_frame_num = 0
                     preset = utils.get_selected_preset(self.config)
-                    self.video_writer = video_utils.VideoWriter(
+                    self.video_writer = video_utils.AsyncVideoWriter(
                         video_tmp_file_output_path, video_metadata.video_width,
                         video_metadata.video_height, video_metadata.video_fps_exact,
                         encoder=preset.encoder_name, encoder_options=preset.encoder_options,
@@ -497,7 +497,7 @@ class ExportView(Gtk.Widget):
                         GLib.idle_add(lambda: self.emit('video-export-progress', self.progress_calculator.get_progress()))
 
                     if self.pause_requested:
-                        logger.info("Pause requested: Pausing FrameRestorer")
+                        logger.info("Pause requested: Pausing FrameRestorer (frame_num=%s)", frame_num)
                         self.resume_info = ResumeInformation(restored_frame_pts, video_metadata.time_base, frame_num)
                         break
 

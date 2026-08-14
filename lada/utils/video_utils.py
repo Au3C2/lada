@@ -17,6 +17,8 @@ from typing import Callable, Iterator, Tuple, Literal
 from collections import deque
 import heapq
 import shlex
+import threading
+from queue import Full, Queue
 
 import av
 import cv2
@@ -24,6 +26,7 @@ import torch
 import numpy as np
 
 from lada.utils import Image, Mask, VideoMetadata, os_utils
+from lada.utils.threading_utils import STOP_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -1039,3 +1042,80 @@ class VideoThumbnailer:
         except Exception as e:
             logger.error(f"Error generating thumbnail at {timestamp_ns}: {e}")
             return self._get_fallback_thumbnail()
+
+
+class AsyncVideoWriter:
+    """Wraps a synchronous :class:`VideoWriter` in a background thread so the
+    producer doesn't block on the PyAV/NVENC encode call (mostly CPU-side
+    overhead in the FFmpeg/PyNvVideoCodec wrappers).
+
+    Encoding latency is overlapped with the next frames' processing. A bounded
+    queue provides backpressure: when the encoder can't keep up, write() blocks
+    and the observed throughput converges to the encoder's ceiling. The queue
+    must not be unbounded, otherwise the producer would run away from the
+    encoder and memory usage would explode.
+
+    Used by both the CLI and the GUI export. The GUI's pause/resume feature is
+    compatible: the writer is created once and kept open across a pause; frames
+    queued before the pause are flushed in order, and resumed frames queue
+    behind them (strict FIFO ordering of timestamps is preserved).
+    """
+
+    def __init__(self, output_path, width, height, fps, encoder: str, encoder_options: str, time_base=None, mp4_fast_start=False):
+        self._video_writer = VideoWriter(output_path, width, height, fps, encoder=encoder,
+                                         encoder_options=encoder_options, time_base=time_base,
+                                         mp4_fast_start=mp4_fast_start)
+        self._frame_queue: Queue = Queue(maxsize=64)
+        self._error: Exception | None = None
+        self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True, name="async-encoder")
+        self._writer_thread.start()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+    def _writer_loop(self):
+        try:
+            while True:
+                item = self._frame_queue.get()
+                if item is STOP_MARKER:
+                    break
+                (frame, frame_pts) = item
+                self._video_writer.write(frame, frame_pts)
+            self._video_writer.release()
+        except Exception as e:
+            self._error = e
+            logger.error("AsyncVideoWriter writer thread failed: %r", e, exc_info=True)
+            try:
+                self._video_writer.release()
+            except Exception:
+                pass
+
+    def write(self, frame, frame_pts=None):
+        while True:
+            if self._error is not None:
+                raise self._error
+            try:
+                self._frame_queue.put((frame, frame_pts), timeout=0.1)
+                return
+            except Full:
+                logger.debug("AsyncVideoWriter.write: queue full, blocking (pts=%s)", frame_pts)
+                continue
+
+    def close(self):
+        while True:
+            if self._error is not None:
+                break
+            try:
+                self._frame_queue.put(STOP_MARKER, timeout=0.1)
+                break
+            except Full:
+                continue
+        self._writer_thread.join()
+        if self._error is not None:
+            raise self._error
+
+    def release(self):
+        self.close()

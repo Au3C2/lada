@@ -12,10 +12,6 @@ class BasicvsrppMosaicRestorer:
         self.model = model
         self.device: torch.device = torch.device(device)
         self.dtype = torch.float16 if fp16 else torch.float32
-        # channels_last: cudnn convs under NCHW pay a layout transpose (NHWC)
-        # per op; running the whole network in NHWC removes those (~8-10% faster
-        # forward on 256x256 clips, numerics unchanged).
-        self.model = self.model.to(memory_format=torch.channels_last)
         # Pre-build the CUDA-graph propagate at load time: capture needs the
         # default stream to itself, so it must not happen inside the worker
         # threads. Feature maps are always 64x64 for 256x256 clips.
@@ -38,10 +34,10 @@ class BasicvsrppMosaicRestorer:
         input_frame_shape = video[0].shape
         with torch.inference_mode():
             result = []
-            # build the (T, C, H, W) stack, convert to channels_last at rank 4
-            # (unsqueeze(0) afterwards: channels_last is undefined for rank 5),
-            # so the model's internal convs run NHWC without per-op transposes.
-            inference_view = torch.stack([x.permute(2, 0, 1) for x in video], dim=0).to(device=self.device).to(dtype=self.dtype).div_(255.0).to(memory_format=torch.channels_last).unsqueeze(0)
+            # build the (T, C, H, W) stack in contiguous (NCHW) layout; the
+            # model and its CUDA graphs capture in NCHW to avoid the numeric
+            # corruption channels_last introduces in the recurrent propagate.
+            inference_view = torch.stack([x.permute(2, 0, 1) for x in video], dim=0).to(device=self.device).to(dtype=self.dtype).div_(255.0).unsqueeze(0)
 
             if max_frames > 0:
                 for i in range(0, inference_view.shape[1], max_frames):

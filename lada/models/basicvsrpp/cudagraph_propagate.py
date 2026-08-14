@@ -44,8 +44,7 @@ class PropagateGraphs:
             bb = self.net.backbone[name]
             others = self._other_names(name)
             def mk():
-                return torch.empty(n, self.C, h, w, device=device, dtype=dtype,
-                                   memory_format=torch.channels_last)
+                return torch.empty(n, self.C, h, w, device=device, dtype=dtype)
             s_fc, s_fp = mk(), mk()
             s_others = [mk() for _ in others]
 
@@ -120,10 +119,8 @@ class UpsampleGraphs:
         device = next(net.parameters()).device
         dtype = next(net.parameters()).dtype
         ih, iw = 4 * h, 4 * w  # input lqs spatial
-        s_hr = torch.empty(n, 5 * self.C, h, w, device=device, dtype=dtype,
-                           memory_format=torch.channels_last)
-        s_lq = torch.empty(n, 3, ih, iw, device=device, dtype=dtype,
-                           memory_format=torch.channels_last)
+        s_hr = torch.empty(n, 5 * self.C, h, w, device=device, dtype=dtype)
+        s_lq = torch.empty(n, 3, ih, iw, device=device, dtype=dtype)
         self.s_hr = s_hr
         self.s_lq = s_lq
 

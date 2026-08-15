@@ -133,6 +133,12 @@ class BasicVSRPlusPlusNet(BaseModule):
             table[A] = flow_n1 + flow_warp(raw, flow_n1.permute(0, 2, 3, 1))
         return table
 
+    def _cudagraph_capture_available(self):
+        # CUDA graphs need the model itself on CUDA, not just a CUDA-capable
+        # machine (e.g. --device cpu on a GPU box would otherwise capture an
+        # empty graph on the CPU stream and hang the pipeline).
+        return torch.cuda.is_available() and next(self.parameters()).device.type == 'cuda'
+
     def prepare_cudagraph_propagate(self, n, h, w):
         """Pre-build the CUDA-graph propagate outside the worker threads.
 
@@ -142,7 +148,7 @@ class BasicVSRPlusPlusNet(BaseModule):
         """
         self._cudagraph_propagate = False
         try:
-            if not torch.cuda.is_available():
+            if not self._cudagraph_capture_available():
                 return
             from lada.models.basicvsrpp.cudagraph_propagate import PropagateGraphs
             self._cudagraph_propagate = PropagateGraphs(self, n, h, w)
@@ -154,7 +160,7 @@ class BasicVSRPlusPlusNet(BaseModule):
         """Pre-build the CUDA-graph upsample at load time (see propagate)."""
         self._cudagraph_upsample = False
         try:
-            if not torch.cuda.is_available():
+            if not self._cudagraph_capture_available():
                 return
             from lada.models.basicvsrpp.cudagraph_propagate import UpsampleGraphs
             if not self._cudagraph_propagate or not self._cudagraph_propagate.supports(n, h, w):
@@ -168,7 +174,7 @@ class BasicVSRPlusPlusNet(BaseModule):
         """Pre-build the CUDA-graph offset/mask computation at load time."""
         self._cudagraph_offsets = False
         try:
-            if not torch.cuda.is_available():
+            if not self._cudagraph_capture_available():
                 return
             from lada.models.basicvsrpp.cudagraph_offsets import OffsetGraphs
             if not self._cudagraph_propagate or not self._cudagraph_propagate.supports(n, h, w):

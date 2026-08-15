@@ -51,12 +51,16 @@ class FrameRestorer:
         max_clips_in_restored_clips_queue = max(1, (512 * 1024 * 1024) // (self.max_clip_length * 256 * 256 * 4)) # 4 = 3 color channels + mask
         self.restored_clip_queue = PipelineQueue(name="restored_clip_queue", maxsize=max_clips_in_restored_clips_queue)
 
-        # The detector must be able to run ahead of the frame restoration worker by up to a full
-        # clip length: a scene only becomes a clip once the detector sees a frame past the scene's
-        # end. While the restoration worker is blocked waiting for a restored clip, this queue is
-        # the only buffer holding those frames. If its capacity were below max_clip_length + 1,
+        # The detector must be able to run ahead of the frame restoration worker by up to a
+        # full clip length: a scene only becomes a clip once the detector sees a frame past the
+        # scene's end. While the restoration worker is blocked waiting for a restored clip, this
+        # queue is the only buffer holding those frames. If its capacity were below max_clip_length + 1,
         # the detector would block on put before completing the scene, and the pipeline would deadlock.
-        self.frame_detection_queue = PipelineQueue(name="frame_detection_queue", maxsize=max_clip_length + 1)
+        # A single clip of lookahead is the bare minimum and serializes the stages: the detector
+        # only closes each scene at the last possible moment, so clips reach the restoration worker
+        # with zero slack. Several clips of lookahead let the detector close scenes and feed the
+        # clip-restoration worker well ahead of the frame worker (each 1080p BGR frame is ~6.2 MB).
+        self.frame_detection_queue = PipelineQueue(name="frame_detection_queue", maxsize=2 * max_clip_length + 1)
 
         self.mosaic_detector = MosaicDetector(self.mosaic_detection_model, self.video_meta_data,
                                               frame_detection_queue=self.frame_detection_queue,

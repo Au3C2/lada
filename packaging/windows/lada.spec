@@ -122,15 +122,26 @@ def get_common_binaries(project_root):
 
     return common_binaries
 
-def get_common_datas(project_root: str):
-    common_datas = [
-        (ospj(project_root, 'model_weights/lada_mosaic_detection_model_v2.pt'), 'model_weights'),
-        (ospj(project_root, 'model_weights/lada_mosaic_detection_model_v4_accurate.pt'), 'model_weights'),
-        (ospj(project_root, 'model_weights/lada_mosaic_detection_model_v4_fast.pt'), 'model_weights'),
-        (ospj(project_root, 'model_weights/lada_mosaic_restoration_model_generic_v1.2.pth'), 'model_weights'),
-        (ospj(project_root, 'model_weights/3rd_party/clean_youknow_video.pth'), 'model_weights/3rd_party'),
-        (ospj(project_root, 'lada/utils/encoding_presets.csv'), 'lada/utils'),
+def get_weight_datas(project_root: str):
+    """Bundle every model weight and its license file found under model_weights/.
+
+    The full weight set is downloaded beforehand by packaging/download_model_weights.py
+    (CI and release builds always contain every weight). Unknown weights added
+    later are picked up automatically.
+    """
+    weights_root = pathlib.Path(ospj(project_root, "model_weights"))
+    if not weights_root.is_dir():
+        return []
+    weight_suffixes = {".pt", ".pth", ".onnx", ".license"}
+    return [
+        (str(p), str(p.relative_to(project_root).parent))
+        for p in weights_root.rglob("*")
+        if p.is_file() and p.suffix.lower() in weight_suffixes
     ]
+
+def get_common_datas(project_root: str):
+    common_datas = get_weight_datas(project_root)
+    common_datas.append((ospj(project_root, 'lada/utils/encoding_presets.csv'), 'lada/utils'))
     common_datas += [(str(p), str(p.relative_to(project_root).parent)) for p in pathlib.Path(ospj(project_root, "lada/locale")).rglob("*.mo")]
     return common_datas
 

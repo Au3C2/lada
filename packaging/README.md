@@ -1,3 +1,31 @@
+## Release via GitHub Actions
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds all
+variants in parallel and assembles a **draft** GitHub Release:
+
+* **Windows** (`windows-latest`): NVIDIA (CUDA) and Intel (XPU) GUI+CLI packages via
+  `package_executable.ps1` (gvsbuild step skipped, GTK stack comes from the prebuilt
+  archive below). Each variant is split into ≤2GB `.7z` chunks with `.sha256` files.
+* **macOS** (`macos-15`, arm64): `Lada.app` (GTK4 GUI) and `lada-cli` via the
+  PyInstaller spec, split into `.7z` chunks.
+* **Docker**: builds `packaging/docker/Dockerfile` and pushes
+  `ladaapp/lada:<tag>` + `:latest` when `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`
+  secrets are set (built but not pushed otherwise; image name overridable via
+  the `DOCKER_IMAGE` repository variable).
+* All packages bundle the full model weight set from
+  `model_weights/checksums_sha256.txt`, downloaded and sha256-verified by
+  `packaging/download_model_weights.py`.
+
+### Windows GTK dependencies
+
+The prebuilt gvsbuild output
+`packaging/windows/deps/lada_windows_dependencies_python313_gvsbuild202611.7z`
+(see `packaging/windows/README.md`) is committed to the repo and used by CI.
+To use a newer archive instead, either replace the committed file or set the
+`LADA_WINDOWS_GTK_ARCHIVE_URL` repository variable to a download URL (it takes
+precedence over the committed file). FFmpeg/ffprobe are not part of the archive
+and are installed by the workflow itself.
+
 ## Update dependencies
 
 After updating release dependencies by adjusting `uv.lock` we need to update dependencies for each release distribution as well.

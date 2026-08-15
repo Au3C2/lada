@@ -10,8 +10,13 @@ dist/
 build_flatpak/
 build_gtk/
 build_gtk_release/
-model_weights/
+model_weights/*
+!model_weights/checksums_sha256.txt
+!model_weights/*.license
+!model_weights/3rd_party/
+!model_weights/3rd_party/*.license
 datasets/
+packaging/windows/deps/
 lada/locale/*/
 *.pt
 *.pth

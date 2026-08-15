@@ -1,0 +1,255 @@
+# SPDX-FileCopyrightText: Lada Authors
+# SPDX-License-Identifier: AGPL-3.0
+#
+# Release workflow: triggered by a push of a v* tag. Builds the Windows
+# (NVIDIA + Intel), macOS (Apple Silicon) and Docker variants, then assembles
+# a draft GitHub Release with all assets.
+#
+# Repository settings required for a fully automatic run:
+# - Variable  LADA_WINDOWS_GTK_ARCHIVE_URL: optional. URL of a 7z archive with
+#   the prebuilt Windows GTK stack (gvsbuild output). If unset, the committed
+#   archive packaging/windows/deps/lada_windows_dependencies_python313_gvsbuild202611.7z
+#   is used instead.
+# - Secrets   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN: optional. Push the image to
+#   Docker Hub. Without them the image is built but not pushed.
+# - Variable  DOCKER_IMAGE: optional. Docker image name (default ladaapp/lada).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (${{ matrix.extra }})
+    runs-on: windows-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: [nvidia, intel]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        shell: pwsh
+        run: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.local\bin"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: model_weights
+          key: lada-weights-${{ hashFiles('model_weights/checksums_sha256.txt') }}
+
+      - name: Download model weights
+        shell: pwsh
+        run: python packaging/download_model_weights.py
+
+      # The PyInstaller spec bundles ffmpeg.exe/ffprobe.exe from PATH, so the
+      # gvsbuild archive does not contain them (it only ships the libav DLLs).
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
+          $ffmpegBin = (Get-ChildItem ffmpeg -Directory | Select-Object -First 1).FullName + '\bin'
+          Add-Content $env:GITHUB_PATH $ffmpegBin
+
+      - name: Ensure 7-Zip is available
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:ProgramFiles\7-Zip\7z.exe")) {
+            choco install 7zip -y --no-progress
+            Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
+          }
+
+      - name: Extract prebuilt GTK dependencies
+        shell: pwsh
+        run: |
+          $archive = 'packaging/windows/deps/lada_windows_dependencies_python313_gvsbuild202611.7z'
+          $url = "${{ vars.LADA_WINDOWS_GTK_ARCHIVE_URL }}"
+          if ($url) {
+            Write-Host "Downloading GTK archive from $url"
+            Invoke-WebRequest $url -OutFile $archive
+          }
+          if (-not (Test-Path $archive)) {
+            throw "GTK archive not found at $archive and LADA_WINDOWS_GTK_ARCHIVE_URL is not set"
+          }
+          $7z = "$env:ProgramFiles\7-Zip\7z.exe"
+          if (-not (Test-Path $7z)) { throw "7-Zip not found" }
+          & $7z x $archive '-obuild_gtk_tmp' -y
+          if (-not (Test-Path 'build_gtk_tmp\build_gtk')) { throw 'Unexpected GTK archive layout' }
+          # package_executable.ps1 expects the gvsbuild output at build_gtk_release
+          Move-Item 'build_gtk_tmp\build_gtk' 'build_gtk_release'
+
+      - name: Build Windows package (${{ matrix.extra }})
+        shell: powershell
+        run: ./packaging/windows/package_executable.ps1 -extra ${{ matrix.extra }} -skipWinget -skipGvsbuild
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ matrix.extra }}
+          path: dist/lada-v*_windows_*
+          if-no-files-found: error
+
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      DH_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      pushed: ${{ steps.login.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve image name
+        id: meta
+        run: |
+          IMAGE="${{ vars.DOCKER_IMAGE != '' && vars.DOCKER_IMAGE || 'ladaapp/lada' }}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Login to Docker Hub
+        id: login
+        if: ${{ env.DH_USERNAME != '' && env.DH_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DH_USERNAME }}
+          password: ${{ env.DH_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          push: ${{ steps.login.outcome == 'success' }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.meta.outputs.image }}:latest
+          build-args: SOURCE_DATE_EPOCH=0
+
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Homebrew dependencies (GTK4, libadwaita, GStreamer, FFmpeg, 7-Zip)
+        run: brew install gtk4 libadwaita adwaita-icon-theme gstreamer ffmpeg sevenzip
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Cache model weights
+        uses: actions/cache@v4
+        with:
+          path: model_weights
+          key: lada-weights-${{ hashFiles('model_weights/checksums_sha256.txt') }}
+
+      - name: Download model weights
+        run: python3 packaging/download_model_weights.py
+
+      - name: Sync project dependencies
+        run: uv sync --extra cpu --extra gui --no-default-groups
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller
+
+      - name: Build Lada.app and lada-cli with PyInstaller
+        run: uv run pyinstaller --noconfirm packaging/macOS/lada.spec
+
+      - name: Create release archives
+        run: |
+          set -euo pipefail
+          VERSION=$(uv run python -c 'import lada; print(lada.VERSION)')
+          echo "Built version: $VERSION"
+          7zz a -snl -v1999m "dist/lada-v${VERSION}_macos_arm64_gui.7z" ./dist/Lada.app
+          7zz a -snl -v1999m "dist/lada-v${VERSION}_macos_arm64_cli.7z" ./dist/cli
+          shopt -s nullglob
+          for f in "dist/lada-v${VERSION}_macos_arm64"*.7z*; do
+            printf '%s %s\n' "$(shasum -a 256 "$f" | awk '{print $1}')" "$(basename "$f")" > "$f.sha256"
+          done
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-arm64
+          path: dist/lada-v*_macos_arm64*
+          if-no-files-found: error
+
+  release:
+    name: Create draft release
+    needs: [windows, docker, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List downloaded assets
+        run: find release-assets -type f | sort
+
+      - name: Write release notes
+        run: |
+          cat > notes.md <<'EOF'
+          ## Lada ${{ github.ref_name }}
+
+          Automated draft release built from tag `${{ github.ref_name }}` by the Release workflow. All packages bundle the full model weight set (24 weights, sha256-verified).
+
+          ### Windows
+          - `lada-v*_windows_nvidia.7z` — NVIDIA GPU variant (CUDA), GUI + CLI
+          - `lada-v*_windows_intel.7z` — Intel Arc / iGPU variant (XPU), GUI + CLI
+
+          ### macOS (Apple Silicon)
+          - `lada-v*_macos_arm64_gui.7z` — Lada.app (GTK4 UI); requires Homebrew GTK4/GStreamer at runtime
+          - `lada-v*_macos_arm64_cli.7z` — lada-cli
+
+          ### Docker
+          - `${{ needs.docker.outputs.image }}:${{ github.ref_name }}` ${{ needs.docker.outputs.pushed == 'true' && '(pushed to Docker Hub)' || '(built locally; NOT pushed — set DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets to enable)' }}
+
+          Split `.7z.001`/`.7z.002` archives: download all chunks and open the first one with 7-Zip or Keka — they reassemble automatically. Each chunk ships with a `.sha256` file.
+          EOF
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "Lada $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            release-assets/*

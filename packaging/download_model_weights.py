@@ -35,7 +35,10 @@ EXTRA_URLS = {
         "https://drive.usercontent.google.com/download"
         "?id=1ulct4RhRxQp1v5xwEmUH7xz7AK42Oqlw&export=download&confirm=t"
     ),
-    "3rd_party/640m.pt": "https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.pt",
+    # The official GitHub release asset (notAI-tech/NudeNet v3.4-weights) now serves
+    # rate-limit pages to anonymous downloads; this HF mirror is byte-identical to it
+    # (sha256 verified against the manifest).
+    "3rd_party/640m.pt": "https://huggingface.co/vladmandic/nudenet/resolve/main/nudenet-v34-640m.pt",
     "3rd_party/DOVER.pth": "https://github.com/QualityAssessment/DOVER/releases/download/v0.1.0/DOVER.pth",
     "3rd_party/spynet_20210409-c6c1bd09.pth": "https://download.openmmlab.com/mmediting/restorers/basicvsr/spynet_20210409-c6c1bd09.pth",
     "3rd_party/vgg19-dcbb9e9d.pth": "https://download.pytorch.org/models/vgg19-dcbb9e9d.pth",

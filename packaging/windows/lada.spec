@@ -11,6 +11,25 @@ import sys
 import pathlib
 import fnmatch
 
+# Torch CUDA libraries that Lada's inference paths never load (verified on the
+# packaged CLI: cudnn_adv, cusolverMg, nvrtc/nvrtc-builtins, curand, cufftw and
+# caffe2_nvrtc can be dropped; cublasLt/cusparse/nvJitLink are hard load-time
+# dependencies of cublas64/cusolver64 and must stay, and cudnn_engines_* plus
+# cupti are required). Excluding them shrinks the bundle by ~0.65 GB.
+# Version-agnostic prefixes keep this working across cu126/cu128 and cudnn
+# 8/9 wheels; the intel (XPU) torch libs have different names and are untouched.
+EXCLUDED_TORCH_LIB_PREFIXES = (
+    "cudnn_adv64_", "cusolvermg64_",
+    "nvrtc64_", "nvrtc-builtins64_", "caffe2_nvrtc",
+    "curand64_", "cufftw64_",
+)
+
+
+def filter_excluded_torch_libs(binaries):
+    return [entry for entry in binaries
+            if not os.path.basename(entry[1]).lower().startswith(EXCLUDED_TORCH_LIB_PREFIXES)]
+
+
 def get_project_root() -> str:
     project_root = pathlib.Path(".").absolute()
     assert (project_root / "pyproject.toml").exists(), "This script must be run from the root of the project"
@@ -212,6 +231,7 @@ common_runtime_hooks = [ospj(project_root, "packaging/windows/pyinstaller_runtim
 common_icon = [ospj(project_root, 'assets/io.github.ladaapp.lada.png')]
 
 cli_a, cli_pyz, cli_exe = get_cli_components(project_root, common_datas, common_binaries, common_runtime_hooks, common_icon)
+cli_a.binaries = filter_excluded_torch_libs(cli_a.binaries)
 coll = COLLECT(
     cli_exe,
     cli_a.binaries,
@@ -234,6 +254,7 @@ if args.cli_only:
     )
 else:
     gui_a, gui_pyz, gui_exe = get_gui_components(project_root, common_datas, common_binaries, common_runtime_hooks, common_icon)
+    gui_a.binaries = filter_excluded_torch_libs(gui_a.binaries)
     coll = COLLECT(
         gui_exe,
         gui_a.binaries,

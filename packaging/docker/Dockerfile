@@ -7,8 +7,8 @@ RUN apt-get update \
 USER lada
 WORKDIR /home/lada
 RUN mkdir -p .local/bin \
-    && curl -L 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.0-latest-linux64-gpl-8.0.tar.xz' \
-        | tar xJf - -C .local/bin --strip-components 2 ffmpeg-n8.0-latest-linux64-gpl-8.0/bin/ffmpeg ffmpeg-n8.0-latest-linux64-gpl-8.0/bin/ffprobe \
+    && curl -L 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz' \
+        | tar xJf - -C .local/bin --strip-components 2 ffmpeg-master-latest-linux64-gpl/bin/ffmpeg ffmpeg-master-latest-linux64-gpl/bin/ffprobe \
     && chmod 555 .local/bin/*
 COPY packaging/docker/requirements.txt packaging/docker/requirements.txt
 RUN pip install --user --no-deps --no-cache-dir --requirement packaging/docker/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128

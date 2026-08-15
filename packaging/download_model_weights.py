@@ -88,8 +88,9 @@ def download_verified(url: str, dest_path: Path, expected_sha256: str) -> None:
     for attempt in range(1, RETRIES + 1):
         try:
             download_to_temp(url, tmp_path)
-            if sha256_of(tmp_path) != expected_sha256:
-                raise RuntimeError(f"checksum mismatch (expected {expected_sha256})")
+            actual_sha256 = sha256_of(tmp_path)
+            if actual_sha256 != expected_sha256:
+                raise RuntimeError(f"checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
             os.replace(tmp_path, dest_path)
             return
         except Exception as exc:

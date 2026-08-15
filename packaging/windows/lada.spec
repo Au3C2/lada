@@ -12,16 +12,17 @@ import pathlib
 import fnmatch
 
 # Torch CUDA libraries that Lada's inference paths never load (verified on the
-# packaged CLI: cudnn_adv, cusolverMg, nvrtc/nvrtc-builtins, curand, cufftw and
-# caffe2_nvrtc can be dropped; cublasLt/cusparse/nvJitLink are hard load-time
-# dependencies of cublas64/cusolver64 and must stay, and cudnn_engines_* plus
-# cupti are required). Excluding them shrinks the bundle by ~0.65 GB.
-# Version-agnostic prefixes keep this working across cu126/cu128 and cudnn
-# 8/9 wheels; the intel (XPU) torch libs have different names and are untouched.
+# packaged CLI: cudnn_adv, cusolverMg, curand, cufftw and caffe2_nvrtc can be
+# dropped; cublasLt/cusparse/nvJitLink are hard load-time dependencies of
+# cublas64/cusolver64, nvrtc is needed by cudnn's runtime-compiled engines (the
+# detection convs spam "Could not locate nvrtc" and slow down without it), and
+# cudnn_engines_* plus cupti are required). Excluding them shrinks the bundle
+# by ~0.5 GB. Version-agnostic prefixes keep this working across cu126/cu128
+# and cudnn 8/9 wheels; the intel (XPU) torch libs have different names and
+# are untouched.
 EXCLUDED_TORCH_LIB_PREFIXES = (
     "cudnn_adv64_", "cusolvermg64_",
-    "nvrtc64_", "nvrtc-builtins64_", "caffe2_nvrtc",
-    "curand64_", "cufftw64_",
+    "caffe2_nvrtc", "curand64_", "cufftw64_",
 )
 
 
@@ -34,6 +35,25 @@ def get_project_root() -> str:
     project_root = pathlib.Path(".").absolute()
     assert (project_root / "pyproject.toml").exists(), "This script must be run from the root of the project"
     return str(project_root)
+
+def get_pync_binaries():
+    """Collect PyNvVideoCodec's native binaries.
+
+    Its __init__ loads the version-specific .pyd (e.g. PyNvVideoCodec_130.cp313-
+    win_amd64.pyd) via an importlib path lookup, which PyInstaller's static
+    analysis cannot see; without these the packaged app silently falls back to
+    the slower PyAV encoder backend.
+    """
+    import importlib.util
+    spec = importlib.util.find_spec("PyNvVideoCodec")
+    if spec is None or spec.submodule_search_locations is None:
+        return []
+    pkg_dir = pathlib.Path(list(spec.submodule_search_locations)[0])
+    binaries = []
+    for pattern in ("*.pyd", "*.dll"):
+        for p in pkg_dir.glob(pattern):
+            binaries.append((str(p), "PyNvVideoCodec"))
+    return binaries
 
 # Intel XPU
 def get_intel_xpu_runtime_libs(project_root):
@@ -95,6 +115,8 @@ def get_common_binaries(project_root):
         (bin_ffmpeg, "bin"),
         (bin_ffprobe, "bin"),
     ]
+
+    common_binaries += get_pync_binaries()
 
     common_binaries += get_intel_xpu_runtime_libs(project_root)
 

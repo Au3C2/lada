@@ -217,6 +217,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+          # Only our own artifacts; docker/build-push-action also uploads a
+          # "dockerbuild" build-record artifact that can fail to download.
+          pattern: release-*
           merge-multiple: true
 
       - name: List downloaded assets

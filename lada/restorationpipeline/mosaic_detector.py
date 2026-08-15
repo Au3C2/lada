@@ -162,12 +162,18 @@ class Clip:
         return self.frames[item], self.masks[item], self.boxes[item]
 
 class MosaicDetector:
-    def __init__(self, model: Yolo11SegmentationModel, video_metadata: VideoMetadata, frame_detection_queue: PipelineQueue, mosaic_clip_queue: PipelineQueue, error_handler: Callable[[ErrorMarker], None], max_clip_length=30, clip_size=256, device: torch.device | None = None, pad_mode='reflect', batch_size=64):
+    def __init__(self, model: Yolo11SegmentationModel, video_metadata: VideoMetadata, frame_detection_queue: PipelineQueue, mosaic_clip_queue: PipelineQueue, error_handler: Callable[[ErrorMarker], None], max_clip_length=30, clip_size=256, device: torch.device | None = None, pad_mode='reflect', batch_size=64, first_clip_max_length: int | None = None):
         self.model = model
         self.video_meta_data = video_metadata
         self.device = torch.device(device) if device is not None else device
         self.max_clip_length = max_clip_length
         assert max_clip_length > 0
+        # The first clip of a run is closed early so the first restored frame
+        # reaches the consumer much sooner (a continuous-mosaic scene would
+        # otherwise wait for max_clip_length frames of detection). Subsequent
+        # scenes keep the regular max_clip_length / detection-gap behaviour.
+        self.first_clip_max_length = first_clip_max_length if first_clip_max_length is not None else max_clip_length
+        self._first_clip_closed = False
         self.clip_size = clip_size
         self.pad_mode = pad_mode
         self.clip_counter = 0
@@ -243,7 +249,8 @@ class MosaicDetector:
     def _create_clips_for_completed_scenes(self, scenes, frame_num, eof) -> StopMarker | None:
         completed_scenes = []
         for current_scene in scenes:
-            if (current_scene.frame_end < frame_num or len(current_scene) >= self.max_clip_length or eof) and current_scene not in completed_scenes:
+            early_first_close = (not self._first_clip_closed and len(current_scene) >= self.first_clip_max_length)
+            if (current_scene.frame_end < frame_num or len(current_scene) >= self.max_clip_length or early_first_close or eof) and current_scene not in completed_scenes:
                 completed_scenes.append(current_scene)
                 other_scenes = [other for other in scenes if other != current_scene]
                 for other_scene in other_scenes:
@@ -253,6 +260,7 @@ class MosaicDetector:
         for completed_scene in sorted(completed_scenes, key=lambda s: s.frame_start):
             clip = Clip(completed_scene, self.clip_size, self.pad_mode, self.clip_counter)
             self.mosaic_clip_queue.put(clip)
+            self._first_clip_closed = True
             if self.stop_requested:
                 logger.debug("frame detector worker: mosaic_clip_queue producer unblocked")
                 return STOP_MARKER

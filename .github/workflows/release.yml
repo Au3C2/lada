@@ -213,6 +213,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      # gh release create needs a git repository to resolve the target repo.
+      - uses: actions/checkout@v4
+
       - name: Download all release assets
         uses: actions/download-artifact@v4
         with:
@@ -250,9 +253,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          shopt -s nullglob
+          # Upload the split 7z chunks (and their .sha256 files) only: GitHub
+          # caps release assets at 2 GiB, and package_executable.ps1 also emits
+          # an unsplit .7z for pixeldrain that can exceed that limit.
+          mapfile -t ASSETS < <(find release-assets -type f ! -name '*.7z' | sort)
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "No release assets found" >&2
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --draft \
             --title "Lada $GITHUB_REF_NAME" \
             --notes-file notes.md \
-            release-assets/*
+            "${ASSETS[@]}"

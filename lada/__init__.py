@@ -25,10 +25,17 @@ def _get_version(version: str):
     try:
         import pathlib
         import subprocess
-        from lada.utils import os_utils
+        import sys
         here = pathlib.Path(__file__).parent.resolve()
+        # Inlined get_subprocess_startup_info: importing lada.utils here would
+        # pull in torch, which keeps `import lada` (and `lada-cli --version`)
+        # fast for light commands.
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
-        commit_id_short = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(here), stderr=subprocess.DEVNULL, startupinfo=os_utils.get_subprocess_startup_info()).decode("ascii").strip()
+        commit_id_short = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=str(here), stderr=subprocess.DEVNULL, startupinfo=startupinfo).decode("ascii").strip()
         return f"{version}+{commit_id_short}"
     except Exception:
         return version

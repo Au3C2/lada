@@ -175,15 +175,6 @@ def dump_encoder_options(encoder: str):
     text = result.stdout.strip().replace("Exiting with exit code 0", "").strip()
     print(text)
 
-class TranslatableHelpFormatter(argparse.RawDescriptionHelpFormatter):
-    def __init__(self, *args, **kwargs):
-        super(TranslatableHelpFormatter, self).__init__(*args, **kwargs)
-
-    def add_usage(self, usage, actions, groups, prefix=None):
-        prefix = _("Usage: ")
-        args = usage, actions, groups, prefix
-        self._add_item(self._format_usage, args)
-
 class Progressbar:
     def __init__(self, video_metadata: VideoMetadata):
         self.frame_processing_durations_buffer = []

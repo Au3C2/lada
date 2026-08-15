@@ -1,6 +1,11 @@
 # SPDX-FileCopyrightText: Lada Authors
 # SPDX-License-Identifier: AGPL-3.0
 
+# SPDX-FileCopyrightText: Lada Authors
+# SPDX-License-Identifier: AGPL-3.0
+
+from __future__ import annotations
+
 import argparse
 import os
 import pathlib
@@ -24,25 +29,42 @@ if getattr(sys, "frozen", False) and sys.platform == "darwin":
         if sys.argv[i] == "-c":
             break
 
-try:
-    import torch
-except ModuleNotFoundError:
-    from lada import IS_FLATPAK
-    if IS_FLATPAK:
-        print(_("No GPU Add-On installed"))
-        print(_("In order to use the application you need to install one of Lada's Flatpak Add-Ons that is compatible with your hardware"))
-        sys.exit(1)
-    else:
-        raise
+from lada import VERSION, ModelFiles, IS_FLATPAK
 
-from lada import VERSION, ModelFiles
-from lada.cli import utils
-from lada.utils import audio_utils, video_utils
-from lada.utils.os_utils import gpu_has_fp16_acceleration, get_default_torch_device
-from lada.restorationpipeline.frame_restorer import FrameRestorer
-from lada.restorationpipeline import load_models
-from lada.utils.threading_utils import STOP_MARKER, ErrorMarker
-from lada.utils.video_utils import get_video_meta_data, get_default_preset_name
+class TranslatableHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """gettext-aware argparse help formatter (kept light: no torch import)."""
+
+    def __init__(self, *args, **kwargs):
+        super(TranslatableHelpFormatter, self).__init__(*args, **kwargs)
+
+    def add_usage(self, usage, actions, groups, prefix=None):
+        prefix = _("Usage: ")
+        args = usage, actions, groups, prefix
+        self._add_item(self._format_usage, args)
+
+def _import_heavy():
+    """Import the torch-dependent modules lazily so light commands (--version,
+    --help, argument errors) do not pay the torch/ultralytics/mmengine import
+    cost. Returns the names the rest of main() uses."""
+    try:
+        import torch
+    except ModuleNotFoundError:
+        if IS_FLATPAK:
+            print(_("No GPU Add-On installed"))
+            print(_("In order to use the application you need to install one of Lada's Flatpak Add-Ons that is compatible with your hardware"))
+            sys.exit(1)
+        else:
+            raise
+    from lada.cli import utils
+    from lada.utils import audio_utils, video_utils
+    from lada.utils.os_utils import gpu_has_fp16_acceleration, get_default_torch_device
+    from lada.restorationpipeline.frame_restorer import FrameRestorer
+    from lada.restorationpipeline import load_models
+    from lada.utils.threading_utils import STOP_MARKER, ErrorMarker
+    from lada.utils.video_utils import get_video_meta_data, get_default_preset_name
+    return (torch, utils, audio_utils, video_utils, gpu_has_fp16_acceleration,
+            get_default_torch_device, FrameRestorer, load_models, STOP_MARKER,
+            ErrorMarker, get_video_meta_data, get_default_preset_name)
 
 def setup_argparser() -> argparse.ArgumentParser:
     examples_header_text = _("Examples:")
@@ -73,7 +95,7 @@ def setup_argparser() -> argparse.ArgumentParser:
                 * {example4_text}
                     {example4_command}
             ''')),
-        formatter_class=utils.TranslatableHelpFormatter,
+        formatter_class=TranslatableHelpFormatter,
         add_help=False)
 
     group_general = parser.add_argument_group(_('General'))
@@ -81,14 +103,16 @@ def setup_argparser() -> argparse.ArgumentParser:
     group_general.add_argument('--output', type=str, help=_('Path used to save output file(s). If path is a directory then file name will be chosen automatically (see --output-file-pattern). If no output path was given then the directory of the input file will be used'))
     group_general.add_argument('--temporary-directory', type=str, default=tempfile.gettempdir(), help=_('Directory for temporary video files during restoration process. Alternatively, you can use the environment variable TMPDIR. (default: %(default)s)'))
     group_general.add_argument('--output-file-pattern', type=str, default="{orig_file_name}.restored.mp4", help=_("Pattern used to determine output file name(s). Used when input is a directory, or a file but no output path was specified. Must include the placeholder '{orig_file_name}'. (default: %(default)s)"))
-    group_general.add_argument('--device', type=str, default=get_default_torch_device(), help=_('Device used for running Restoration and Detection models. Use "--list-devices" to see what\'s available (default: %(default)s)'))
-    group_general.add_argument('--fp16', action=argparse.BooleanOptionalAction, default=gpu_has_fp16_acceleration(), help=_("Reduces VRAM usage and may increase speed on modern GPUs, with negligible quality difference. (default: %(default)s)"))
+    # device/fp16 defaults are torch-dependent and resolved lazily in main()
+    # after the heavy imports, so light commands stay fast
+    group_general.add_argument('--device', type=str, default=None, help=_('Device used for running Restoration and Detection models. Use "--list-devices" to see what\'s available'))
+    group_general.add_argument('--fp16', action=argparse.BooleanOptionalAction, default=None, help=_("Reduces VRAM usage and may increase speed on modern GPUs, with negligible quality difference"))
     group_general.add_argument('--list-devices', action='store_true', help=_("List available devices and exit"))
     group_general.add_argument('--version', action='store_true', help=_("Display version and exit"))
     group_general.add_argument('--help', action='store_true', help=_("Show this help message and exit"))
 
     export = parser.add_argument_group(_('Export'))
-    export.add_argument('--encoding-preset', type=str, default=get_default_preset_name(), help=_('Select encoding preset by name. Use "--list-encoding-presets" to see what\'s available. Ignored if "--encoder" and "--encoder-options" are used (default: %(default)s)'))
+    export.add_argument('--encoding-preset', type=str, default=None, help=_('Select encoding preset by name. Use "--list-encoding-presets" to see what\'s available. Ignored if "--encoder" and "--encoder-options" are used'))
     export.add_argument('--list-encoding-presets', action='store_true', help=_("List available encoding presets and exit"))
     export.add_argument('--encoder', type=str, help=_('Select video encoder by name. Use "--list-encoders" to see what\'s available. (default: %(default)s)'))
     export.add_argument('--list-encoders', action='store_true', help=_("List available encoders and exit"))
@@ -101,6 +125,7 @@ def setup_argparser() -> argparse.ArgumentParser:
     group_restoration.add_argument('--mosaic-restoration-model', type=str, default='basicvsrpp-v1.2', help=_('Name of detection model or path to model weights file. Use "--list-mosaic-restoration-models" to see what\'s available. (default: %(default)s)'))
     group_restoration.add_argument('--mosaic-restoration-config-path', type=str, default=None, help=_("Path to restoration model configuration file. You'll not have to set this unless you're training your own custom models"))
     group_restoration.add_argument('--max-clip-length', type=int, default=180, help=_('Maximum number of frames for restoration. Higher values improve temporal stability. Lower values reduce memory footprint. If set too low flickering could appear (default: %(default)s)'))
+    group_restoration.add_argument('--first-clip-max-length', type=int, default=None, help=_('Close the first clip after this many frames so the first restored frame appears sooner. Defaults to --max-clip-length (no early close)'))
 
     group_detection = parser.add_argument_group(_('Mosaic Detection'))
     group_detection.add_argument('--mosaic-detection-model', type=str, default='v4-fast', help=_('Name of detection model or path to model weights file. Use "--list-mosaic-detection-models" to see what\'s available. (default: %(default)s)'))
@@ -110,11 +135,18 @@ def setup_argparser() -> argparse.ArgumentParser:
     return parser
 
 def process_video_file(input_path: str, output_path: str, temp_dir_path: str, device: torch.device, mosaic_restoration_model, mosaic_detection_model,
-                       mosaic_restoration_model_name, preferred_pad_mode, max_clip_length, encoder: str, encoder_options: str, mp4_fast_start):
+                       mosaic_restoration_model_name, preferred_pad_mode, max_clip_length, encoder: str, encoder_options: str, mp4_fast_start,
+                       first_clip_max_length: int | None = None):
+    from lada.cli import utils
+    from lada.utils import audio_utils
+    from lada.restorationpipeline.frame_restorer import FrameRestorer
+    from lada.utils.threading_utils import STOP_MARKER, ErrorMarker
+    from lada.utils.video_utils import get_video_meta_data
     video_metadata = get_video_meta_data(input_path)
 
     frame_restorer = FrameRestorer(device, input_path, max_clip_length, mosaic_restoration_model_name,
-                 mosaic_detection_model, mosaic_restoration_model, preferred_pad_mode)
+                 mosaic_detection_model, mosaic_restoration_model, preferred_pad_mode,
+                 first_clip_max_length=first_clip_max_length)
     success = True
     video_tmp_file_output_path = os.path.join(temp_dir_path, f"{os.path.basename(os.path.splitext(output_path)[0])}.tmp{os.path.splitext(output_path)[1]}")
     pathlib.Path(output_path).parent.mkdir(exist_ok=True, parents=True)
@@ -157,6 +189,21 @@ def main():
     if args.version:
         print("Lada: ", VERSION)
         sys.exit(0)
+    list_command = (args.list_encoders or args.list_mosaic_detection_models
+                    or args.list_mosaic_restoration_models or args.list_devices
+                    or args.list_encoding_presets or args.list_encoder_options)
+    if (args.help or not args.input) and not list_command:
+        argparser.print_help()
+        sys.exit(0)
+    (torch, utils, audio_utils, video_utils, gpu_has_fp16_acceleration,
+     get_default_torch_device, FrameRestorer, load_models, STOP_MARKER,
+     ErrorMarker, get_video_meta_data, get_default_preset_name) = _import_heavy()
+    if args.device is None:
+        args.device = get_default_torch_device()
+    if args.fp16 is None:
+        args.fp16 = gpu_has_fp16_acceleration()
+    if args.encoding_preset is None:
+        args.encoding_preset = get_default_preset_name()
     if args.list_encoders:
         utils.dump_encoders()
         sys.exit(0)
@@ -174,9 +221,6 @@ def main():
         sys.exit(0)
     if args.list_encoder_options:
         utils.dump_encoder_options(args.list_encoder_options)
-        sys.exit(0)
-    if args.help or not args.input:
-        argparser.print_help()
         sys.exit(0)
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         print(_("GPU {device} selected but CUDA is not available").format(device=args.device))
@@ -255,7 +299,8 @@ def main():
         try:
             process_video_file(input_path=input_path, output_path=output_path, temp_dir_path=args.temporary_directory, device=device, mosaic_restoration_model=mosaic_restoration_model, mosaic_detection_model=mosaic_detection_model,
                                mosaic_restoration_model_name=mosaic_restoration_model_name, preferred_pad_mode=preferred_pad_mode, max_clip_length=args.max_clip_length,
-                               encoder=encoder, encoder_options=encoder_options, mp4_fast_start=args.mp4_fast_start)
+                               encoder=encoder, encoder_options=encoder_options, mp4_fast_start=args.mp4_fast_start,
+                               first_clip_max_length=args.first_clip_max_length)
         except KeyboardInterrupt:
             print(_("Received Ctrl-C, stopping restoration."))
             break

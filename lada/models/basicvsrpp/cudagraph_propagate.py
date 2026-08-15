@@ -89,17 +89,19 @@ class PropagateGraphs:
                 else:
                     flow_n2 = torch.zeros_like(flow_n1)
                     feat_n2 = torch.zeros_like(feat_prop)
-                cond_n1 = flow_warp(feat_prop, flow_n1.permute(0, 2, 3, 1))
-                cond_n2 = flow_warp(feat_n2, flow_n2.permute(0, 2, 3, 1))
-                cond = torch.cat([cond_n1, feat_current, cond_n2], dim=1)
-                fp2in = torch.cat([feat_prop, feat_n2], dim=1)
                 og = getattr(self.net, "_cudagraph_offsets", None)
                 if og and og.supports(n, h, w):
-                    offset, mask = og.compute(module_name, cond, flow_n1, flow_n2)
+                    offset, mask, fp2in = og.compute(module_name, feat_prop,
+                                                     feat_current, feat_n2,
+                                                     flow_n1, flow_n2)
                     feat_prop = torchvision.ops.deform_conv2d(
                         fp2in, offset, da.weight, da.bias, da.stride,
                         da.padding, da.dilation, mask)
                 else:
+                    cond_n1 = flow_warp(feat_prop, flow_n1.permute(0, 2, 3, 1))
+                    cond_n2 = flow_warp(feat_n2, flow_n2.permute(0, 2, 3, 1))
+                    cond = torch.cat([cond_n1, feat_current, cond_n2], dim=1)
+                    fp2in = torch.cat([feat_prop, feat_n2], dim=1)
                     feat_prop = da(fp2in, cond, flow_n1, flow_n2)
             g['s_fc'].copy_(feat_current)
             g['s_fp'].copy_(feat_prop)

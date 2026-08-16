@@ -30,9 +30,8 @@ Script options:
 
 ## Publish exe
 
-* Attach both `lada-<version>.7z.001` and `lada-<version>.7z.002` to GitHub Release (rag-and-drop to the Draft Release) 
-* Upload `lada-<version>.7z` to https://pixeldrain.com
-* Add Pixeldrain download link and link to GitHub Release to both Draft Releases on GitHub and Codeberg
+* Attach the `lada-<version>.7z.00N` chunks and their `.sha256` files to the GitHub Draft Release — the CI release workflow does this automatically
+* GitHub Releases is the only download source; there is no pixeldrain upload anymore
 
 ## Update gvsbuild
 
@@ -40,4 +39,4 @@ Checklist when updating gvsbuild / Windows GUI system dependencies. Some steps m
 
 * Update `package_executable.ps1` (at least version)
 * Update/add/remove patches for gvsbuild
-* Rebuild and upload artifacts to Pixeldrain and update links in `windows_install.md`
+* Rebuild and commit the new archive to `packaging/windows/deps/` (or host it and set the `LADA_WINDOWS_GTK_ARCHIVE_URL` repository variable)

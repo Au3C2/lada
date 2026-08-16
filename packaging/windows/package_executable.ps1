@@ -189,17 +189,8 @@ function Create-7ZArchive {
     }
 
     # Split .7z archive into 2GB chunks so they can be uploaded to GitHub Releases
+    # (a single archive would exceed GitHub's 2 GiB per-asset limit)
     7z.exe a -v1999m $archive_path "./dist/lada"
-
-    # Create single-file .7z archive
-    $single_chunk = (Get-ChildItem "./dist" -filter "*.7z*" | Where-Object Name -Match '\.7z.\d{3}$' | Measure-Object).Count -eq 1
-    if ($single_chunk) {
-        $old = "./dist/lada-v{0}_windows_{1}.7z.001" -f $version,$extra
-        $new = $archive_path
-        mv $old $new
-    } else {
-        7z.exe a $archive_path "./dist/lada"
-    }
 
     Get-ChildItem "./dist" -filter "*.7z*" | Where-Object Name -Match '\.7z(.\d{3})?$' | ForEach-Object {
         $sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()

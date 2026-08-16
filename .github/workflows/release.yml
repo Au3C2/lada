@@ -215,8 +215,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      # gh release create needs a git repository to resolve the target repo.
+      # gh release create needs a git repository to resolve the target repo;
+      # the changelog also requires the full history and all tags.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Download all release assets
         uses: actions/download-artifact@v4
@@ -232,21 +236,21 @@ jobs:
 
       - name: Write release notes
         run: |
-          cat > notes.md <<'EOF'
-          ## Lada ${{ github.ref_name }}
+          PREV_TAG="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+          echo "Previous release tag: ${PREV_TAG:-<none>}"
+          python3 packaging/generate_release_notes.py \
+            --current-tag "$GITHUB_REF_NAME" \
+            --previous-tag "$PREV_TAG" > notes.md
+          cat >> notes.md <<'EOF'
 
-          Automated draft release built from tag `${{ github.ref_name }}` by the Release workflow. All packages bundle the full model weight set (24 weights, sha256-verified).
+          ### Assets
 
-          ### Windows
-          - `lada-v*_windows_nvidia.7z` — NVIDIA GPU variant (CUDA), GUI + CLI
-          - `lada-v*_windows_intel.7z` — Intel Arc / iGPU variant (XPU), GUI + CLI
+          All packages bundle the full model weight set (24 weights, sha256-verified).
 
-          ### macOS (Apple Silicon)
-          - `lada-v*_macos_arm64_gui.7z` — Lada.app (GTK4 UI); requires Homebrew GTK4/GStreamer at runtime
-          - `lada-v*_macos_arm64_cli.7z` — lada-cli
-
-          ### Docker
-          - `${{ needs.docker.outputs.image }}:${{ github.ref_name }}` — pushed to the GitHub Container Registry (ghcr.io)
+          - Windows (NVIDIA, CUDA): `lada-v*_windows_nvidia.7z.00N` chunks, GUI + CLI
+          - Windows (Intel Arc, XPU): `lada-v*_windows_intel.7z.00N` chunks, GUI + CLI
+          - macOS (Apple Silicon): `lada-v*_macos_arm64_gui.7z.00N` (Lada.app; requires Homebrew GTK4/GStreamer at runtime) and `lada-v*_macos_arm64_cli.7z.00N` (lada-cli)
+          - Docker: `${{ needs.docker.outputs.image }}:${{ github.ref_name }}` — pushed to the GitHub Container Registry (ghcr.io)
 
           Split `.7z.001`/`.7z.002` archives: download all chunks and open the first one with 7-Zip or Keka — they reassemble automatically. Each chunk ships with a `.sha256` file.
           EOF

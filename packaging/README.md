@@ -9,9 +9,11 @@ variants in parallel and assembles a **draft** GitHub Release:
 * **macOS** (`macos-15`, arm64): `Lada.app` (GTK4 GUI) and `lada-cli` via the
   PyInstaller spec, split into `.7z` chunks.
 * **Docker**: builds `packaging/docker/Dockerfile` and pushes
-  `ladaapp/lada:<tag>` + `:latest` when `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`
-  secrets are set (built but not pushed otherwise; image name overridable via
-  the `DOCKER_IMAGE` repository variable).
+  `ghcr.io/au3c2/lada:<tag>` + `:latest` to the GitHub Container Registry. The
+  workflow logs in with the built-in `GITHUB_TOKEN`, so no credentials are
+  needed (image name overridable via the `DOCKER_IMAGE` repository variable).
+  After the first push, set the package visibility to public under
+  https://github.com/users/Au3C2/packages/container/package/lada/settings.
 * All packages bundle the full model weight set from
   `model_weights/checksums_sha256.txt`, downloaded and sha256-verified by
   `packaging/download_model_weights.py`.

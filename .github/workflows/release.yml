@@ -10,9 +10,11 @@
 #   the prebuilt Windows GTK stack (gvsbuild output). If unset, the committed
 #   archive packaging/windows/deps/lada_windows_dependencies_python313_gvsbuild202611.7z
 #   is used instead.
-# - Secrets   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN: optional. Push the image to
-#   Docker Hub. Without them the image is built but not pushed.
-# - Variable  DOCKER_IMAGE: optional. Docker image name (default ladaapp/lada).
+# - Variable  DOCKER_IMAGE: optional. Container image name
+#   (default ghcr.io/au3c2/lada). The image is pushed to the GitHub Container
+#   Registry using the built-in GITHUB_TOKEN, so no credentials are needed.
+#   After the first push, set the package visibility to public under
+#   https://github.com/users/Au3C2/packages/container/package/lada/settings
 
 name: Release
 
@@ -23,6 +25,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -113,9 +116,6 @@ jobs:
     name: Docker
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    env:
-      DH_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     outputs:
       image: ${{ steps.meta.outputs.image }}
       pushed: ${{ steps.login.outcome == 'success' }}
@@ -127,16 +127,18 @@ jobs:
       - name: Resolve image name
         id: meta
         run: |
-          IMAGE="${{ vars.DOCKER_IMAGE != '' && vars.DOCKER_IMAGE || 'ladaapp/lada' }}"
+          IMAGE="${{ vars.DOCKER_IMAGE != '' && vars.DOCKER_IMAGE || 'ghcr.io/au3c2/lada' }}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Login to Docker Hub
+      # GitHub Container Registry accepts the built-in GITHUB_TOKEN, so no
+      # external registry credentials are needed.
+      - name: Login to GitHub Container Registry
         id: login
-        if: ${{ env.DH_USERNAME != '' && env.DH_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
-          username: ${{ env.DH_USERNAME }}
-          password: ${{ env.DH_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Build and push image
         id: build
@@ -244,10 +246,17 @@ jobs:
           - `lada-v*_macos_arm64_cli.7z` — lada-cli
 
           ### Docker
-          - `${{ needs.docker.outputs.image }}:${{ github.ref_name }}` ${{ needs.docker.outputs.pushed == 'true' && '(pushed to Docker Hub)' || '(built locally; NOT pushed — set DOCKERHUB_USERNAME/DOCKERHUB_TOKEN secrets to enable)' }}
+          - `${{ needs.docker.outputs.image }}:${{ github.ref_name }}` — pushed to the GitHub Container Registry (ghcr.io)
 
           Split `.7z.001`/`.7z.002` archives: download all chunks and open the first one with 7-Zip or Keka — they reassemble automatically. Each chunk ships with a `.sha256` file.
           EOF
+
+      # The previous run of this workflow may have left a draft for this tag;
+      # gh release create fails if one already exists.
+      - name: Delete existing draft release (if any)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "$GITHUB_REF_NAME" --yes || true
 
       - name: Create draft release
         env:
